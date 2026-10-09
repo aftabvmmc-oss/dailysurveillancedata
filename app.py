@@ -217,5 +217,7 @@ if datasets:
         surv_df2a['extracted_city'] = get_nested_col(surv_df2a, 'pat_city')
         surv_df2a['extracted_phone'] = get_nested_col(surv_df2a, 'pat_phone')
         surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'pat_hospital')
-        if surv_df2a['extracted_hosp'].isna().all(): surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'hospital')
-        if surv_df2a['extracted_hosp'].isna().all(): surv_df2a['extracted_hosp'] = get_nested
+        if surv_df2a['extracted_hosp'].isna().all(): 
+            surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'hospital')
+        if surv_df2a['extracted_hosp'].isna().all(): 
+            surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'hosp_name')
