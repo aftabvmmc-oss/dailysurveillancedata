@@ -332,7 +332,7 @@ if datasets:
         surv_df2a['Raw_Submitter'] = surv_df2a.apply(get_submitter_raw, axis=1)
         surv_df2a['Sub_Category'] = surv_df2a['Raw_Submitter'].apply(map_sub_summary)
 
-        if 'forms_due' not in ent_df2a.columns:
+    if 'forms_due' not in ent_df2a.columns:
         ent_df2a['forms_due'] = 1
 
     site_due_dict = ent_df2a.groupby('Site_Chart')['forms_due'].sum().to_dict()
