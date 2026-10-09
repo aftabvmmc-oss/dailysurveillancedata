@@ -45,19 +45,8 @@ def get_nested_col(df, key):
     return pd.Series([None]*len(df), index=df.index)
 
 def clean_phone_series(s):
-    # Ensure series elements are handled safely even if they contain None, dicts, or mixed types
-    if s is None:
-        return pd.Series(dtype=str)
-    
-    # Convert series to string, filling missing values safely
-    s_str = s.fillna("").astype(str)
-    
-    # Remove decimal points (common when reading IDs from Excel/CSV) and non-digits
-    s_cleaned = s_str.str.replace(r'\.0$', '', regex=True).str.replace(r'\D', '', regex=True)
-    
-    # Safely slice the last 10 characters only if the length is at least 10
-    return s_cleaned.apply(lambda x: x[-10:] if isinstance(x, str) and len(x) >= 10 else x)
-    
+    return s.astype(str).str.replace(r'\.0$', '', regex=True).str.replace(r'\D', '', regex=True).apply(lambda x: x[-10:] if len(x) >= 10 else x)
+
 def format_age_sex_row(row, age_col, sex_col):
     age = str(row[age_col]).split('.')[0] if pd.notna(row[age_col]) else '?'
     if age == 'nan' or age == 'None': age = '?'
@@ -85,7 +74,7 @@ def get_phase_global(city, hosp, current_study_phase):
 # ---------------------------------------------------------
 # 4. DATA FETCHING FUNCTIONS (CACHED)
 # ---------------------------------------------------------
-@st.cache_data(ttl=43200, show_spinner=False)
+@st.cache_data(ttl=43200, persist="disk", show_spinner=False)
 def fetch_odk_data(endpoint_suffix):
     if not all([ODK_URL, ODK_USERNAME, ODK_PASSWORD, PROJECT_ID]):
         return pd.DataFrame()
@@ -217,7 +206,211 @@ if datasets:
         surv_df2a['extracted_city'] = get_nested_col(surv_df2a, 'pat_city')
         surv_df2a['extracted_phone'] = get_nested_col(surv_df2a, 'pat_phone')
         surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'pat_hospital')
-        if surv_df2a['extracted_hosp'].isna().all(): 
-            surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'hospital')
-        if surv_df2a['extracted_hosp'].isna().all(): 
-            surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'hosp_name')
+        if surv_df2a['extracted_hosp'].isna().all(): surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'hospital')
+        if surv_df2a['extracted_hosp'].isna().all(): surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'facility')
+
+        surv_col = 'extracted_phone' if surv_df2a['extracted_phone'].notna().any() else ('phone_no' if 'phone_no' in surv_df2a.columns else next((c for c in surv_df2a.columns if 'phone' in c.lower()), None))
+        surv_df2a['clean_phone'] = clean_phone_series(surv_df2a[surv_col]) if surv_col else ''
+            
+        surv_city_col = 'extracted_city' if surv_df2a['extracted_city'].notna().any() else next((c for c in surv_df2a.columns if 'city' in c.lower()), None)
+        if surv_city_col:
+            surv_df2a['surv_native_Site_Chart'] = surv_df2a.apply(lambda row: get_phase_global(row.get(surv_city_col), row.get('extracted_hosp'), study_phase), axis=1)
+            surv_df2a['surv_native_Site_Name'] = surv_df2a[surv_city_col].map(CITY_MAP).fillna(surv_df2a[surv_city_col])
+        else:
+            surv_df2a['surv_native_Site_Chart'] = 'Unknown'
+            surv_df2a['surv_native_Site_Name'] = 'Unknown'
+            
+        if 'clean_phone' in ent_df2a.columns and 'clean_phone' in surv_df2a.columns:
+            ent_subset = ent_df2a[ent_df2a['clean_phone'] != ''][['clean_phone', cadre_col_ent, 'Site_Chart', 'Site_Name']].drop_duplicates(subset=['clean_phone'])
+            surv_df2a = surv_df2a.merge(ent_subset, on='clean_phone', how='left')
+            surv_df2a['Site_Chart'] = surv_df2a['Site_Chart'].fillna(surv_df2a['surv_native_Site_Chart'])
+            surv_df2a['Site_Name'] = surv_df2a['Site_Name'].fillna(surv_df2a['surv_native_Site_Name'])
+            surv_df2a[cadre_col_ent] = surv_df2a[cadre_col_ent].fillna('Unknown')
+        else:
+            surv_df2a['Site_Chart'] = surv_df2a['surv_native_Site_Chart']
+            surv_df2a['Site_Name'] = surv_df2a['surv_native_Site_Name']
+            surv_df2a[cadre_col_ent] = 'Unknown'
+
+        # Apply Filters
+        if selected_sites:
+            surv_df2a = surv_df2a[surv_df2a['Site_Name'].isin(selected_sites)]
+            ent_df2a = ent_df2a[ent_df2a['Site_Name'].isin(selected_sites)]
+            
+        if 'today' in surv_df2a.columns:
+            surv_df2a['today_dt'] = pd.to_datetime(surv_df2a['today'], errors='coerce').dt.date
+            surv_df2a = surv_df2a[(surv_df2a['today_dt'] >= start_date) & (surv_df2a['today_dt'] <= end_date)]
+            
+        if selected_cadres:
+            pattern = '|'.join(selected_cadres)
+            surv_df2a = surv_df2a[surv_df2a[cadre_col_ent].str.contains(pattern, case=False, na=False)]
+            ent_df2a = ent_df2a[ent_df2a[cadre_col_ent].str.contains(pattern, case=False, na=False)]
+
+        delta = end_date - start_date
+        date_list = [start_date + datetime.timedelta(days=i) for i in range(delta.days + 1)]
+        weekday_counts = {i: 0 for i in range(7)}
+        for d in date_list: weekday_counts[d.weekday()] += 1
+            
+        day_map = {'1': 0, 'monday': 0, 'mon': 0, '2': 1, 'tuesday': 1, 'tue': 1,
+                   '3': 2, 'wednesday': 2, 'wed': 2, '4': 3, 'thursday': 3, 'thu': 3,
+                   '5': 4, 'friday': 4, 'fri': 4}
+                   
+        contact_day_col = 'pat_contact_day' if 'pat_contact_day' in ent_df2a.columns else next((c for c in ent_df2a.columns if 'contact_day' in str(c).lower()), None)
+        
+        if contact_day_col:
+            ent_df2a['contact_wd'] = ent_df2a[contact_day_col].astype(str).str.lower().str.strip().map(day_map)
+            ent_df2a['forms_due'] = ent_df2a['contact_wd'].map(weekday_counts).fillna(0)
+            total_due = int(ent_df2a['forms_due'].sum())
+        else:
+            total_due = "Unknown"
+            
+        total_filled = len(surv_df2a)
+        if isinstance(total_due, (int, float)) and total_due > 0:
+            filled_pct = (total_filled / total_due) * 100
+            filled_display = f"{total_filled} ({filled_pct:.1f}%)"
+        else:
+            filled_display = str(total_filled)
+        
+        st.subheader("Form Response Overview")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"<div style='background-color:rgba(150, 150, 150, 0.1);padding:15px;border-radius:10px;text-align:center;'><h4>Total Forms Due in selected date range</h4><h1 style='color:#C87550;margin:0;'>{total_due}</h1></div>", unsafe_allow_html=True)
+        with col2:
+            st.markdown(f"<div style='background-color:rgba(150, 150, 150, 0.1);padding:15px;border-radius:10px;text-align:center;'><h4>Total Forms Filled</h4><h1 style='color:#85B65A;margin:0;'>{filled_display}</h1></div>", unsafe_allow_html=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.subheader("Submissions Summary (Selected Date Range)")
+        
+        week_col_raw = 'weekofyear'
+        if week_col_raw not in surv_df2a.columns:
+            surv_df2a[week_col_raw] = pd.to_datetime(surv_df2a['today'], errors='coerce').dt.strftime('%U') if 'today' in surv_df2a.columns else 0
+
+        surv_df2a['week_num'] = pd.to_numeric(surv_df2a[week_col_raw], errors='coerce').fillna(0).astype(int)
+        surv_df2a['Week'] = 'Week ' + surv_df2a['week_num'].astype(str).str.zfill(2)
+        ordered_weeks2a = sorted(surv_df2a[surv_df2a['week_num'] > 0]['Week'].unique())
+        
+        def get_submitter_raw(row):
+            if 'SubmitterName' in row and pd.notna(row['SubmitterName']) and str(row['SubmitterName']).strip() != '': 
+                return str(row['SubmitterName']).strip()
+            if '__system' in row and isinstance(row['__system'], dict):
+                sys_name = row['__system'].get('submitterName')
+                if sys_name: return str(sys_name).strip()
+            return "Unknown/Other"
+        
+        def map_sub_summary(x):
+            x = str(x).strip()
+            if study_phase == "Main Study":
+                if "Participant" in x: return "Forms filled by Participant"
+                if "Data Collector" in x: return "Forms Filled by Data Collector"
+            else:
+                if "Participant" in x and "Main" not in x: return "Forms filled by Participant"
+                if "Data Collector" in x and "Main" not in x: return "Forms Filled by Data Collector"
+                if "Participant" in x: return "Forms filled by Participant"
+                if "Data Collector" in x: return "Forms Filled by Data Collector"
+            return "Forms Filled by Data Collector"
+            
+        surv_df2a['Raw_Submitter'] = surv_df2a.apply(get_submitter_raw, axis=1)
+        surv_df2a['Sub_Category'] = surv_df2a['Raw_Submitter'].apply(map_sub_summary)
+        
+        site_due_dict = ent_df2a.groupby('Site_Chart')['forms_due'].sum().to_dict()
+        chart_data = []
+        ordered_y_axis = []
+        
+        for site, den in site_due_dict.items():
+            den = int(den)
+            if den == 0: continue
+            site_ent_subset = ent_df2a[ent_df2a['Site_Chart'] == site]
+            valid_phones = set(site_ent_subset['clean_phone'])
+            site_surv = surv_df2a[surv_df2a['Site_Chart'] == site]
+            phones_part = site_surv[site_surv['Sub_Category'] == 'Forms filled by Participant']['clean_phone'].tolist()
+            phones_dc = site_surv[site_surv['Sub_Category'] == 'Forms Filled by Data Collector']['clean_phone'].tolist()
+            part_count = len([p for p in phones_part if p in valid_phones])
+            dc_count = len([p for p in phones_dc if p in valid_phones])
+            not_filled = max(0, den - part_count - dc_count)
+            
+            y_label = site
+            if y_label not in ordered_y_axis: ordered_y_axis.append(y_label)
+            
+            chart_data.extend([
+                {'Site_Chart': y_label, 'Category': 'Forms filled by Participant', 'Percentage': (part_count / den) * 100 if den > 0 else 0, 'Count': part_count},
+                {'Site_Chart': y_label, 'Category': 'Forms Filled by Data Collector', 'Percentage': (dc_count / den) * 100 if den > 0 else 0, 'Count': dc_count},
+                {'Site_Chart': y_label, 'Category': 'Forms not filled', 'Percentage': (not_filled / den) * 100 if den > 0 else 0, 'Count': not_filled}
+            ])
+            
+        df_chart = pd.DataFrame(chart_data)
+        
+        if not df_chart.empty:
+            fig_summary = px.bar(
+                df_chart, y='Site_Chart', x='Percentage', color='Category', orientation='h',
+                color_discrete_map={'Forms filled by Participant': '#85B65A', 'Forms Filled by Data Collector': '#2E4B71', 'Forms not filled': '#E0E0E0'},
+                category_orders={"Site_Chart": list(reversed(sorted(ordered_y_axis)))},
+                hover_data={'Count': True, 'Percentage': ':.1f'}
+            )
+            fig_summary.update_layout(barmode='stack', xaxis_title="% of forms filled", yaxis_title="", margin=dict(t=20, b=0, l=0, r=0), legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5, title=""))
+            fig_summary.update_traces(texttemplate='%{x:.0f}%', textposition='inside')
+            fig_summary.update_layout(height=max(300, len(ordered_y_axis) * 60))
+            st.plotly_chart(fig_summary, use_container_width=True, key="submissions_summary_stacked_col")
+        else:
+            st.info("No data available to generate submissions summary chart.")
+            
+        st.divider()
+
+        surv_df2a['Submitter'] = surv_df2a['Raw_Submitter']
+        st.subheader("Forms Filled by Site & Submitter")
+        if not surv_df2a.empty:
+            submitter_agg = surv_df2a.groupby(['Site_Chart', 'Submitter']).size().reset_index(name='Count')
+            fig_sub = px.bar(
+                submitter_agg, x='Site_Chart', y='Count', color='Submitter', barmode='stack', text='Count',
+                category_orders={'Site_Chart': sorted(surv_df2a['Site_Chart'].unique())},
+                labels={'Site_Chart': '', 'Count': 'Forms Filled (n)', 'Submitter': 'Filled By'},
+                color_discrete_sequence=px.colors.qualitative.Safe
+            )
+            fig_sub.update_traces(textposition='inside')
+            fig_sub.update_layout(margin=dict(t=20, b=0, l=0, r=0), legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5))
+            st.plotly_chart(fig_sub, use_container_width=True)
+            
+            st.markdown("**Submitter Breakdown (%)**")
+            sub_totals = surv_df2a['Submitter'].value_counts().reset_index()
+            sub_totals.columns = ['Submitter', 'Forms Filled']
+            sub_totals['Percentage'] = (sub_totals['Forms Filled'] / total_filled * 100).round(1).astype(str) + "%"
+            def style_sub(df): return df.style.apply(lambda x: ['background-color: rgba(150, 150, 150, 0.1)' if i % 2 == 0 else '' for i in range(len(x))], axis=0).set_table_styles([{'selector': 'th', 'props': [('font-weight', 'bold')]}])
+            st.dataframe(style_sub(sub_totals), use_container_width=True, hide_index=True)
+            
+            st.divider()
+            st.subheader("Surveillance Submissions Line List")
+            
+            surv_ll = surv_df2a.copy()
+            surv_ll['Serial No.'] = range(1, len(surv_ll) + 1)
+            
+            surv_ll['Name'] = get_nested_col(surv_ll, 'pat_name')
+            surv_ll['Age'] = get_nested_col(surv_ll, 'pat_age')
+            surv_ll['Sex'] = get_nested_col(surv_ll, 'pat_gender')
+            surv_ll['Age & Sex'] = surv_ll.apply(lambda r: format_age_sex_row(r, 'Age', 'Sex'), axis=1)
+            surv_ll['Designation'] = get_nested_col(surv_ll, 'pat_designation')
+            surv_ll['Department'] = get_nested_col(surv_ll, 'pat_department')
+            surv_ll['Cadre'] = surv_ll[cadre_col_ent]
+            surv_ll['Site'] = surv_ll['Site_Name']
+            surv_ll['Form Filled By'] = surv_ll['Submitter']
+            
+            if 'clean_phone' in surv_ll.columns and 'clean_phone' in ent_df2a.columns:
+                if contact_day_col:
+                    ent_days = ent_df2a[['clean_phone', contact_day_col]].drop_duplicates('clean_phone')
+                    surv_ll = surv_ll.merge(ent_days, on='clean_phone', how='left')
+                    surv_ll['Day of Surveillance'] = surv_ll[contact_day_col].fillna('Unknown').astype(str).str.title()
+                else:
+                    surv_ll['Day of Surveillance'] = 'Unknown'
+            else:
+                surv_ll['Day of Surveillance'] = 'Unknown'
+
+            display_cols_2a = ['Serial No.', 'Name', 'Age & Sex', 'Designation', 'Cadre', 'Site', 'Form Filled By', 'Day of Surveillance']
+            surv_ll_disp = surv_ll[[c for c in display_cols_2a if c in surv_ll.columns]].fillna('')
+            
+            st.dataframe(
+                style_sub(surv_ll_disp), use_container_width=True, hide_index=True,
+                column_config={"Serial No.": st.column_config.NumberColumn("S.No.", width="small")}
+            )
+        else:
+            st.info("No surveillance forms filled in the selected date range.")
+    else:
+        st.info("Awaiting data from both 'ILI Entities' and 'Surveillance' forms.")
+else:
+    st.info("Awaiting data connection. Please configure your secrets in the Streamlit App Settings.")
