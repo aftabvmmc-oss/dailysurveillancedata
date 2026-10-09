@@ -45,8 +45,29 @@ def get_nested_col(df, key):
     return pd.Series([None]*len(df), index=df.index)
 
 def clean_phone_series(s):
-    return s.astype(str).str.replace(r'\.0$', '', regex=True).str.replace(r'\D', '', regex=True).apply(lambda x: x[-10:] if len(x) >= 10 else x)
+    if s is None:
+        return pd.Series(dtype=str)
+    
+    def clean_single(val):
+        if pd.isna(val):
+            return ""
+        # Handle cases where the value might be parsed as a dictionary
+        if isinstance(val, dict):
+            val = str(val.get('phone_number') or val.get('phone') or val.get('number') or '')
+        
+        val_str = str(val)
+        # Remove trailing .0 from float conversions
+        if val_str.endswith('.0'):
+            val_str = val_str[:-2]
+            
+        # Extract only digits
+        digits = "".join([c for c in val_str if c.isdigit()])
+        
+        # Take last 10 digits if length is >= 10
+        return digits[-10:] if len(digits) >= 10 else digits
 
+    return s.map(clean_single)
+    
 def format_age_sex_row(row, age_col, sex_col):
     age = str(row[age_col]).split('.')[0] if pd.notna(row[age_col]) else '?'
     if age == 'nan' or age == 'None': age = '?'
