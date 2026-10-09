@@ -17,15 +17,20 @@ st.set_page_config(
 
 # ---------------------------------------------------------
 # 2. SECURE CREDENTIALS LOADING
-# Streamlit Community Cloud maps TOML secrets to environment variables.
+# Checks st.secrets first, then falls back to os.environ
 # ---------------------------------------------------------
-ODK_URL = os.environ.get("ODK_URL")
-ODK_USERNAME = os.environ.get("ODK_USERNAME")
-ODK_PASSWORD = os.environ.get("ODK_PASSWORD")
-PROJECT_ID = os.environ.get("PROJECT_ID")
+def get_secret(key):
+    if key in st.secrets:
+        return st.secrets[key]
+    return os.environ.get(key)
 
-FORM_ID_SURVEILLANCE = os.environ.get("FORM_ID_SURVEILLANCE")
-ENTITY_ID_ILI = os.environ.get("ENTITY_ID_ILI")
+ODK_URL = get_secret("ODK_URL")
+ODK_USERNAME = get_secret("ODK_USERNAME")
+ODK_PASSWORD = get_secret("ODK_PASSWORD")
+PROJECT_ID = str(get_secret("PROJECT_ID")) if get_secret("PROJECT_ID") is not None else None
+
+FORM_ID_SURVEILLANCE = get_secret("FORM_ID_SURVEILLANCE")
+ENTITY_ID_ILI = get_secret("ENTITY_ID_ILI")
 
 # ---------------------------------------------------------
 # 3. GLOBAL OPTIMIZED DATA HELPERS
