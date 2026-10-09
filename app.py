@@ -36,7 +36,8 @@ ENTITY_ID_ILI = get_secret("ENTITY_ID_ILI")
 # 3. GLOBAL OPTIMIZED DATA HELPERS
 # ---------------------------------------------------------
 def get_nested_col(df, key):
-    if key in df.columns: return df[key]
+    if key in df.columns: 
+        return df[key]
     for col in df.columns:
         valid_series = df[col].dropna()
         if not valid_series.empty:
@@ -46,8 +47,9 @@ def get_nested_col(df, key):
                 if has_key:
                     return df[col].apply(lambda x: x.get(key) if isinstance(x, dict) else None)
     matches = [c for c in df.columns if key in str(c).lower()]
-    if matches: return df[matches[0]]
-    return pd.Series([None]*len(df), index=df.index)
+    if matches: 
+        return df[matches[0]]
+    return pd.Series([None] * len(df), index=df.index)
 
 def clean_phone_series(s):
     if s is None:
@@ -70,18 +72,22 @@ def clean_phone_series(s):
     
 def format_age_sex_row(row, age_col, sex_col):
     age = str(row[age_col]).split('.')[0] if pd.notna(row[age_col]) else '?'
-    if age == 'nan' or age == 'None': age = '?'
+    if age in ('nan', 'None'): 
+        age = '?'
     sex = str(row[sex_col]).strip() if pd.notna(row[sex_col]) else '?'
-    if sex == 'nan' or sex == 'None': sex = '?'
+    if sex in ('nan', 'None'): 
+        sex = '?'
     sex = sex[0].upper() if sex != '?' and len(sex) > 0 else '?'
     return f"{age} / {sex}"
 
 CITY_MAP = {'NC': 'NCT Delhi', 'PU': 'Pune', 'CH': 'Chennai', 'JO': 'Jodhpur', 'KO': 'Kolkata', 'GU': 'Guwahati'}
 ABBR_MAP = {v: k for k, v in CITY_MAP.items()}
-for k in CITY_MAP.keys(): ABBR_MAP[k] = k 
+for k in CITY_MAP.keys(): 
+    ABBR_MAP[k] = k 
 
 def get_phase_global(city, hosp, current_study_phase):
-    if pd.isna(city): return 'Unknown'
+    if pd.isna(city): 
+        return 'Unknown'
     abbr = ABBR_MAP.get(city, city)
     if abbr == 'NC':
         if current_study_phase == "Main Study":
@@ -106,7 +112,18 @@ def fetch_odk_data(endpoint_suffix):
         response.raise_for_status()
         data = response.json()
         if "value" in data:
-            return pd.DataFrame(data["value"])
+            df = pd.DataFrame(data["value"])
+            # Unpack nested entity data or currentVersion properties if present
+            for nested_col in ["data", "currentVersion"]:
+                if nested_col in df.columns:
+                    try:
+                        nested_df = pd.json_normalize(df[nested_col].dropna())
+                        for col in nested_df.columns:
+                            if col not in df.columns:
+                                df[col] = nested_df[col]
+                    except Exception:
+                        pass
+            return df
     except requests.exceptions.HTTPError as errh:
         st.error(f"HTTP Error for {endpoint_suffix}: {errh}")
     except Exception as e:
@@ -115,8 +132,10 @@ def fetch_odk_data(endpoint_suffix):
 
 def load_all_data():
     data = {}
-    if FORM_ID_SURVEILLANCE: data['Surveillance'] = fetch_odk_data(f"forms/{FORM_ID_SURVEILLANCE}.svc/Submissions")
-    if ENTITY_ID_ILI: data['ILI Entities'] = fetch_odk_data(f"datasets/{ENTITY_ID_ILI}.svc/Entities")
+    if FORM_ID_SURVEILLANCE: 
+        data['Surveillance'] = fetch_odk_data(f"forms/{FORM_ID_SURVEILLANCE}.svc/Submissions")
+    if ENTITY_ID_ILI: 
+        data['ILI Entities'] = fetch_odk_data(f"datasets/{ENTITY_ID_ILI}.svc/Entities")
     return data
 
 # ---------------------------------------------------------
@@ -212,8 +231,10 @@ if datasets:
 
         hosp_col_ent = next((c for c in ent_df2a.columns if 'hospital' in c.lower() or 'facility' in c.lower()), None)
         ent_city_col = 'city' if 'city' in ent_df2a.columns else next((c for c in ent_df2a.columns if 'city' in c.lower()), None)
+        
         cadre_col_ent = 'pat_cadre_status'
-        if cadre_col_ent not in ent_df2a.columns: ent_df2a[cadre_col_ent] = 'Unknown'
+        if cadre_col_ent not in ent_df2a.columns:
+            ent_df2a[cadre_col_ent] = get_nested_col(ent_df2a, 'pat_cadre_status').fillna('Unknown')
         
         if ent_city_col:
             ent_df2a['Site_Chart'] = ent_df2a.apply(lambda row: get_phase_global(row.get(ent_city_col), row.get(hosp_col_ent), study_phase), axis=1)
@@ -259,8 +280,13 @@ if datasets:
             surv_df2a = surv_df2a[surv_df2a['Site_Name'].isin(selected_sites)]
             ent_df2a = ent_df2a[ent_df2a['Site_Name'].isin(selected_sites)]
             
-        if 'today' in surv_df2a.columns:
-            surv_df2a['today_dt'] = pd.to_datetime(surv_df2a['today'], errors='coerce').dt.date
+        # Extract and filter by submission date safely
+        date_series = get_nested_col(surv_df2a, 'today')
+        if date_series.isna().all() and '__system' in surv_df2a.columns:
+            date_series = surv_df2a['__system'].apply(lambda x: x.get('submissionDate') if isinstance(x, dict) else None)
+
+        if date_series is not None and not date_series.isna().all():
+            surv_df2a['today_dt'] = pd.to_datetime(date_series, errors='coerce').dt.date
             surv_df2a = surv_df2a[(surv_df2a['today_dt'] >= start_date) & (surv_df2a['today_dt'] <= end_date)]
             
         if selected_cadres:
@@ -271,13 +297,18 @@ if datasets:
         delta = end_date - start_date
         date_list = [start_date + datetime.timedelta(days=i) for i in range(delta.days + 1)]
         weekday_counts = {i: 0 for i in range(7)}
-        for d in date_list: weekday_counts[d.weekday()] += 1
+        for d in date_list: 
+            weekday_counts[d.weekday()] += 1
             
         day_map = {'1': 0, 'monday': 0, 'mon': 0, '2': 1, 'tuesday': 1, 'tue': 1,
                    '3': 2, 'wednesday': 2, 'wed': 2, '4': 3, 'thursday': 3, 'thu': 3,
                    '5': 4, 'friday': 4, 'fri': 4}
                    
         contact_day_col = 'pat_contact_day' if 'pat_contact_day' in ent_df2a.columns else next((c for c in ent_df2a.columns if 'contact_day' in str(c).lower()), None)
+        if not contact_day_col:
+            ent_df2a['pat_contact_day'] = get_nested_col(ent_df2a, 'pat_contact_day')
+            if ent_df2a['pat_contact_day'].notna().any():
+                contact_day_col = 'pat_contact_day'
         
         if contact_day_col:
             ent_df2a['contact_wd'] = ent_df2a[contact_day_col].astype(str).str.lower().str.strip().map(day_map)
@@ -305,7 +336,7 @@ if datasets:
         
         week_col_raw = 'weekofyear'
         if week_col_raw not in surv_df2a.columns:
-            surv_df2a[week_col_raw] = pd.to_datetime(surv_df2a['today'], errors='coerce').dt.strftime('%U') if 'today' in surv_df2a.columns else 0
+            surv_df2a[week_col_raw] = pd.to_datetime(surv_df2a.get('today_dt', pd.Series(dtype='object')), errors='coerce').dt.strftime('%U')
 
         surv_df2a['week_num'] = pd.to_numeric(surv_df2a[week_col_raw], errors='coerce').fillna(0).astype(int)
         surv_df2a['Week'] = 'Week ' + surv_df2a['week_num'].astype(str).str.zfill(2)
@@ -316,7 +347,8 @@ if datasets:
                 return str(row['SubmitterName']).strip()
             if '__system' in row and isinstance(row['__system'], dict):
                 sys_name = row['__system'].get('submitterName')
-                if sys_name: return str(sys_name).strip()
+                if sys_name: 
+                    return str(sys_name).strip()
             return "Unknown/Other"
         
         def map_sub_summary(x):
@@ -343,7 +375,8 @@ if datasets:
         
         for site, den in site_due_dict.items():
             den = int(den)
-            if den == 0: continue
+            if den == 0: 
+                continue
             site_ent_subset = ent_df2a[ent_df2a['Site_Chart'] == site]
             valid_phones = set(site_ent_subset['clean_phone'])
             site_surv = surv_df2a[surv_df2a['Site_Chart'] == site]
@@ -354,7 +387,8 @@ if datasets:
             not_filled = max(0, den - part_count - dc_count)
             
             y_label = site
-            if y_label not in ordered_y_axis: ordered_y_axis.append(y_label)
+            if y_label not in ordered_y_axis: 
+                ordered_y_axis.append(y_label)
             
             chart_data.extend([
                 {'Site_Chart': y_label, 'Category': 'Forms filled by Participant', 'Percentage': (part_count / den) * 100 if den > 0 else 0, 'Count': part_count},
@@ -398,7 +432,8 @@ if datasets:
             sub_totals = surv_df2a['Submitter'].value_counts().reset_index()
             sub_totals.columns = ['Submitter', 'Forms Filled']
             sub_totals['Percentage'] = (sub_totals['Forms Filled'] / total_filled * 100).round(1).astype(str) + "%"
-            def style_sub(df): return df.style.apply(lambda x: ['background-color: rgba(150, 150, 150, 0.1)' if i % 2 == 0 else '' for i in range(len(x))], axis=0).set_table_styles([{'selector': 'th', 'props': [('font-weight', 'bold')]}])
+            def style_sub(df): 
+                return df.style.apply(lambda x: ['background-color: rgba(150, 150, 150, 0.1)' if i % 2 == 0 else '' for i in range(len(x))], axis=0).set_table_styles([{'selector': 'th', 'props': [('font-weight', 'bold')]}])
             st.dataframe(style_sub(sub_totals), use_container_width=True, hide_index=True)
             
             st.divider()
