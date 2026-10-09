@@ -85,7 +85,7 @@ def get_phase_global(city, hosp, current_study_phase):
 # ---------------------------------------------------------
 # 4. DATA FETCHING FUNCTIONS (CACHED)
 # ---------------------------------------------------------
-@st.cache_data(ttl=43200, persist="disk", show_spinner=False)
+@st.cache_data(ttl=43200, show_spinner=False)
 def fetch_odk_data(endpoint_suffix):
     if not all([ODK_URL, ODK_USERNAME, ODK_PASSWORD, PROJECT_ID]):
         return pd.DataFrame()
