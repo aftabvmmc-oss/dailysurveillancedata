@@ -51,19 +51,14 @@ def clean_phone_series(s):
     def clean_single(val):
         if pd.isna(val):
             return ""
-        # Handle cases where the value might be parsed as a dictionary
         if isinstance(val, dict):
             val = str(val.get('phone_number') or val.get('phone') or val.get('number') or '')
         
         val_str = str(val)
-        # Remove trailing .0 from float conversions
         if val_str.endswith('.0'):
             val_str = val_str[:-2]
             
-        # Extract only digits
         digits = "".join([c for c in val_str if c.isdigit()])
-        
-        # Take last 10 digits if length is >= 10
         return digits[-10:] if len(digits) >= 10 else digits
 
     return s.map(clean_single)
@@ -95,7 +90,7 @@ def get_phase_global(city, hosp, current_study_phase):
 # ---------------------------------------------------------
 # 4. DATA FETCHING FUNCTIONS (CACHED)
 # ---------------------------------------------------------
-@st.cache_data(ttl=43200, persist="disk", show_spinner=False)
+@st.cache_data(ttl=43200, show_spinner=False)
 def fetch_odk_data(endpoint_suffix):
     if not all([ODK_URL, ODK_USERNAME, ODK_PASSWORD, PROJECT_ID]):
         return pd.DataFrame()
@@ -227,8 +222,10 @@ if datasets:
         surv_df2a['extracted_city'] = get_nested_col(surv_df2a, 'pat_city')
         surv_df2a['extracted_phone'] = get_nested_col(surv_df2a, 'pat_phone')
         surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'pat_hospital')
-        if surv_df2a['extracted_hosp'].isna().all(): surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'hospital')
-        if surv_df2a['extracted_hosp'].isna().all(): surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'facility')
+        if surv_df2a['extracted_hosp'].isna().all(): 
+            surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'hospital')
+        if surv_df2a['extracted_hosp'].isna().all(): 
+            surv_df2a['extracted_hosp'] = get_nested_col(surv_df2a, 'facility')
 
         surv_col = 'extracted_phone' if surv_df2a['extracted_phone'].notna().any() else ('phone_no' if 'phone_no' in surv_df2a.columns else next((c for c in surv_df2a.columns if 'phone' in c.lower()), None))
         surv_df2a['clean_phone'] = clean_phone_series(surv_df2a[surv_col]) if surv_col else ''
@@ -332,7 +329,7 @@ if datasets:
         surv_df2a['Raw_Submitter'] = surv_df2a.apply(get_submitter_raw, axis=1)
         surv_df2a['Sub_Category'] = surv_df2a['Raw_Submitter'].apply(map_sub_summary)
 
-    if 'forms_due' not in ent_df2a.columns:
+        if 'forms_due' not in ent_df2a.columns:
             ent_df2a['forms_due'] = 1
 
         site_due_dict = ent_df2a.groupby('Site_Chart')['forms_due'].sum().to_dict()
