@@ -336,8 +336,8 @@ if datasets:
         ent_df2a['forms_due'] = 1
 
     site_due_dict = ent_df2a.groupby('Site_Chart')['forms_due'].sum().to_dict()
-        chart_data = []
-        ordered_y_axis = []
+    chart_data = []
+    ordered_y_axis = []
         
         for site, den in site_due_dict.items():
             den = int(den)
